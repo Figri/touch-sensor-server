@@ -1,0 +1,11 @@
+{
+  "name": "touch-sensor-server",
+  "version": "1.0.0",
+  "description": "Vercel Serverless API，用于接收 ESP32 触摸传感器上传的数据",
+  "type": "module",
+  "main": "api/touch.js",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "license": "MIT"
+}
