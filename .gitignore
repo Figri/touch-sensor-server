@@ -1,0 +1,18 @@
+# 依赖
+node_modules/
+
+# Vercel
+.vercel/
+
+# 环境变量
+.env
+.env.local
+
+# ESP32 凭据（禁止提交真实 Wi-Fi 密码）
+secrets.h
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
