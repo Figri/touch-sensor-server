@@ -16,3 +16,9 @@ secrets.h
 .idea/
 *.swp
 .DS_Store
+
+# PlatformIO / Arduino 编译产物
+.pio/
+firmware/*/src/
+firmware/*/platformio.ini
+firmware/*/.pio/
