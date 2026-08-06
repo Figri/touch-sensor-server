@@ -81,12 +81,16 @@ bool btnWasPressed = false;
 // ============ NVS 配置读写 ============
 #define PREFS_NAMESPACE "touchdoll"
 
+// 服务器默认配置（手机配置时可修改，不填则用此默认值）
+const String DEFAULT_SERVER_URL = "https://touch-sensor-repo.vercel.app/api/touch";
+const String DEFAULT_API_KEY    = "touch-demo-key-2026";
+
 void loadConfig() {
   prefs.begin(PREFS_NAMESPACE, true);
   cfg.wifiSSID   = prefs.getString("ssid", "");
   cfg.wifiPass   = prefs.getString("pass", "");
-  cfg.serverUrl  = prefs.getString("url", "");
-  cfg.apiKey     = prefs.getString("key", "");
+  cfg.serverUrl  = prefs.getString("url", DEFAULT_SERVER_URL);
+  cfg.apiKey     = prefs.getString("key", DEFAULT_API_KEY);
   cfg.deviceId   = prefs.getString("devid", "doll-01");
   prefs.end();
 }
@@ -129,6 +133,8 @@ void sendData(int s1, int s2, bool t1, bool t2) {
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
 
+  Serial.printf("[HTTP] 连接: %s\n", cfg.serverUrl.c_str());
+
   if (!http.begin(client, cfg.serverUrl)) {
     Serial.println("[HTTP] begin 失败");
     return;
@@ -155,6 +161,9 @@ void sendData(int s1, int s2, bool t1, bool t2) {
 
 // ============ 配置模式页面 ============
 String buildConfigPage() {
+  // 预填默认值到页面
+  String urlVal = cfg.serverUrl.length() > 0 ? cfg.serverUrl : DEFAULT_SERVER_URL;
+  String keyVal = cfg.apiKey.length() > 0 ? cfg.apiKey : DEFAULT_API_KEY;
   String html = R"HTML(<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -208,13 +217,13 @@ String buildConfigPage() {
     <input id="ssid" type="text" placeholder="如 CMCC-xxx" autocomplete="off">
     <label>Wi-Fi 密码 <span class="req">*</span></label>
     <input id="pass" type="password" placeholder="Wi-Fi 密码">
-    <label>服务器接口地址 <span class="req">*</span></label>
-    <input id="url" type="text" placeholder="https://xxx.vercel.app/api/touch" autocomplete="off">
-    <label>DEVICE_API_KEY <span class="req">*</span></label>
-    <input id="key" type="text" placeholder="设备密钥" autocomplete="off">
+    <label>服务器接口地址</label>
+    <input id="url" type="text" value=")HTML" + urlVal + R"HTML(" autocomplete="off">
+    <label>DEVICE_API_KEY</label>
+    <input id="key" type="text" value=")HTML" + keyVal + R"HTML(" autocomplete="off">
     <label>设备 ID</label>
-    <input id="devid" type="text" placeholder="doll-01" value="doll-01" autocomplete="off">
-    <div class="hint">用于区分不同设备，默认 doll-01。</div>
+    <input id="devid" type="text" value=")HTML" + cfg.deviceId + R"HTML(" autocomplete="off">
+    <div class="hint">只需填 Wi-Fi 名称和密码，其余已自动填好。</div>
     <button class="btn" type="submit">保存并连接</button>
   </form>
   <div id="msg"></div>
@@ -223,14 +232,14 @@ String buildConfigPage() {
 var submitForm=()=>{
   var ssid=document.getElementById('ssid').value.trim();
   var pass=document.getElementById('pass').value;
-  var url=document.getElementById('url').value.trim();
-  var key=document.getElementById('key').value.trim();
+  var url=document.getElementById('url').value.trim()||')HTML" + urlVal + R"HTML(';
+  var key=document.getElementById('key').value.trim()||')HTML" + keyVal + R"HTML(';
   var devid=document.getElementById('devid').value.trim()||'doll-01';
   var msg=document.getElementById('msg');
   msg.className='';
-  if(!ssid||!pass||!url||!key){
+  if(!ssid||!pass){
     msg.className='err';
-    msg.innerText='请填写所有带 * 的必填项。';
+    msg.innerText='请填写 Wi-Fi 名称和密码。';
     return false;
   }
   if(url.indexOf('http://')!==0 && url.indexOf('https://')!==0){
