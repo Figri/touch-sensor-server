@@ -19,11 +19,22 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.DEVICE_API_KEY || 'touch-demo-key-2026';
-const DATA_FILE = path.join(__dirname, 'touch-history.json');
+
+// 数据文件放在用户主目录下，避免 /opt 权限问题
+const DATA_DIR = path.join(os.homedir(), 'touch-doll-data');
+const DATA_FILE = path.join(DATA_DIR, 'touch-history.json');
 const MAX_HISTORY = 500;
+
+// 确保数据目录存在
+try {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+} catch (e) {
+  console.error('[存储] 创建数据目录失败:', e.message);
+}
 
 // ============ 触摸事件追踪 ============
 const touchState = {
@@ -77,6 +88,7 @@ function processTouch(parsed, receivedAt) {
     touchState.s1.touching = true;
     touchState.s1.startTime = now;
     touchState.s1.maxForce = parsed.sensor1;
+    console.log(`[触摸开始] 脸 s1=${parsed.sensor1} 服务器时间=${ts.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}`);
   } else if (parsed.touch1 && touchState.s1.touching) {
     // 持续触摸，更新最大力度
     if (parsed.sensor1 > touchState.s1.maxForce) {
@@ -117,6 +129,7 @@ function processTouch(parsed, receivedAt) {
     touchState.s2.touching = true;
     touchState.s2.startTime = now;
     touchState.s2.maxForce = parsed.sensor2;
+    console.log(`[触摸开始] 大大灵 s2=${parsed.sensor2} 服务器时间=${ts.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}`);
   } else if (parsed.touch2 && touchState.s2.touching) {
     if (parsed.sensor2 > touchState.s2.maxForce) {
       touchState.s2.maxForce = parsed.sensor2;

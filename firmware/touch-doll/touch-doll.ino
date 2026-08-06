@@ -41,7 +41,7 @@
 #define SEND_TOUCH_MS    500
 #define HEARTBEAT_MS     10000
 #define STATE_CHANGE_GUARD_MS 100
-#define HTTP_TIMEOUT_MS  5000
+#define HTTP_TIMEOUT_MS  3000
 
 // 配置热点
 const char* AP_SSID = "TouchDoll-Setup";
