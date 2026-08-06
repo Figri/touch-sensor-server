@@ -1,0 +1,10 @@
+{
+  "name": "touch-doll-local-server",
+  "version": "1.0.0",
+  "description": "ESP32 触摸玩偶本地 API 服务器",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {}
+}
