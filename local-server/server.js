@@ -89,82 +89,83 @@ function processTouch(parsed, receivedAt) {
     // 开始触摸
     touchState.s1.touching = true;
     touchState.s1.startTime = now;
+    touchState.s1.lastDataTime = now;
     touchState.s1.maxForce = parsed.sensor1;
     console.log(`[触摸开始] 脸 s1=${parsed.sensor1} 服务器时间=${ts.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}`);
   } else if (parsed.touch1 && touchState.s1.touching) {
-    // 持续触摸，更新最大力度
+    // 持续触摸，更新最大力度和时间
+    touchState.s1.lastDataTime = now;
     if (parsed.sensor1 > touchState.s1.maxForce) {
       touchState.s1.maxForce = parsed.sensor1;
     }
   } else if (!parsed.touch1 && touchState.s1.touching) {
-    // 触摸结束
-    const duration = (now - touchState.s1.startTime) / 1000;
-    const event = {
-      time: ts.toISOString(),
-      device: parsed.deviceId,
-      sensor: 's1',
-      sensorLabel: '脸',
-      maxForce: touchState.s1.maxForce,
-      duration: Math.round(duration * 10) / 10,
-      description: getForceDescription(touchState.s1.maxForce),
-    };
-    history.push(event);
-    if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
-    saveHistory();
-
-    latestTouchSummary = {
-      lastTouch: event.time,
-      sensor: event.sensor,
-      sensorLabel: event.sensorLabel,
-      maxForce: event.maxForce,
-      forcePercent: Math.round((event.maxForce / 4095) * 100),
-      duration: event.duration,
-      description: event.description,
-    };
-
-    console.log(`[触摸结束] 脸 力度=${event.maxForce}(${event.description}) 持续=${event.duration}s`);
-    touchState.s1.touching = false;
+    finishTouch('s1', '脸', parsed.deviceId, now, ts);
   }
 
   // === 传感器2 ===
   if (parsed.touch2 && !touchState.s2.touching) {
     touchState.s2.touching = true;
     touchState.s2.startTime = now;
+    touchState.s2.lastDataTime = now;
     touchState.s2.maxForce = parsed.sensor2;
     console.log(`[触摸开始] 大大灵 s2=${parsed.sensor2} 服务器时间=${ts.toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}`);
   } else if (parsed.touch2 && touchState.s2.touching) {
+    touchState.s2.lastDataTime = now;
     if (parsed.sensor2 > touchState.s2.maxForce) {
       touchState.s2.maxForce = parsed.sensor2;
     }
   } else if (!parsed.touch2 && touchState.s2.touching) {
-    const duration = (now - touchState.s2.startTime) / 1000;
-    const event = {
-      time: ts.toISOString(),
-      device: parsed.deviceId,
-      sensor: 's2',
-      sensorLabel: '大大灵',
-      maxForce: touchState.s2.maxForce,
-      duration: Math.round(duration * 10) / 10,
-      description: getForceDescription(touchState.s2.maxForce),
-    };
-    history.push(event);
-    if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
-    saveHistory();
-
-    latestTouchSummary = {
-      lastTouch: event.time,
-      sensor: event.sensor,
-      sensorLabel: event.sensorLabel,
-      maxForce: event.maxForce,
-      forcePercent: Math.round((event.maxForce / 4095) * 100),
-      duration: event.duration,
-      description: event.description,
-    };
-
-    console.log(`[触摸结束] 大大灵 力度=${event.maxForce}(${event.description}) 持续=${event.duration}s`);
-    touchState.s2.touching = false;
+    finishTouch('s2', '大大灵', parsed.deviceId, now, ts);
   }
 }
+
+// 结束触摸并记录事件
+function finishTouch(sensor, label, deviceId, endTime, ts) {
+  const st = touchState[sensor];
+  const duration = (endTime - st.startTime) / 1000;
+  const event = {
+    time: ts.toISOString(),
+    device: deviceId,
+    sensor: sensor,
+    sensorLabel: label,
+    maxForce: st.maxForce,
+    duration: Math.round(duration * 10) / 10,
+    description: getForceDescription(st.maxForce),
+  };
+  history.push(event);
+  if (history.length > MAX_HISTORY) history = history.slice(-MAX_HISTORY);
+  saveHistory();
+
+  latestTouchSummary = {
+    lastTouch: event.time,
+    sensor: event.sensor,
+    sensorLabel: event.sensorLabel,
+    maxForce: event.maxForce,
+    forcePercent: Math.round((event.maxForce / 4095) * 100),
+    duration: event.duration,
+    description: event.description,
+  };
+
+  console.log(`[触摸结束] ${label} 力度=${event.maxForce}(${event.description}) 持续=${event.duration}s`);
+  st.touching = false;
+}
+
+// 超时自动结束：如果触摸中超过 2 秒没收到新数据，判定松手
+const TOUCH_TIMEOUT_MS = 2000;
+setInterval(() => {
+  const now = Date.now();
+  const ts = new Date(now).toISOString();
+
+  if (touchState.s1.touching && (now - touchState.s1.lastDataTime) > TOUCH_TIMEOUT_MS) {
+    console.log('[超时结束] 脸 超过2秒未收到数据，自动判定松手');
+    finishTouch('s1', '脸', latestData ? latestData.deviceId : 'doll-01', now, new Date(now));
+  }
+
+  if (touchState.s2.touching && (now - touchState.s2.lastDataTime) > TOUCH_TIMEOUT_MS) {
+    console.log('[超时结束] 大大灵 超过2秒未收到数据，自动判定松手');
+    finishTouch('s2', '大大灵', latestData ? latestData.deviceId : 'doll-01', now, new Date(now));
+  }
+}, 500);
 
 // ============ 工具函数 ============
 let latestData = null;
