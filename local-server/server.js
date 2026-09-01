@@ -150,14 +150,14 @@ function finishTouch(sensor, label, deviceId, endTime, ts) {
   st.touching = false;
 }
 
-// 超时自动结束：如果触摸中超过 2 秒没收到新数据，判定松手
-const TOUCH_TIMEOUT_MS = 2000;
+// 超时自动结束：如果触摸中超过 6 秒没收到新数据，判定松手
+// （中国到美国硅谷 HTTP 往返约 1-2 秒，加上 ESP32 同步阻塞，需要足够大的超时）
+const TOUCH_TIMEOUT_MS = 6000;
 setInterval(() => {
   const now = Date.now();
-  const ts = new Date(now).toISOString();
 
   if (touchState.s1.touching && (now - touchState.s1.lastDataTime) > TOUCH_TIMEOUT_MS) {
-    console.log('[超时结束] 脸 超过2秒未收到数据，自动判定松手');
+    console.log('[超时结束] 脸 超过6秒未收到数据，自动判定松手');
     finishTouch('s1', '脸', latestData ? latestData.deviceId : 'doll-01', now, new Date(now));
   }
 
