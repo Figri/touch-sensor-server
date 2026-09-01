@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { handleMcpRequest } = require('./mcp-handler');
+const { handleOAuth } = require('./oauth-helper');
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.DEVICE_API_KEY || 'touch-demo-key-2026';
@@ -316,6 +317,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
     res.end();
+    return;
+  }
+
+  // === OAuth 端点（让 Claude 自定义连接器能走通 OAuth 流程）===
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (handleOAuth(req, res, parsedUrl)) {
     return;
   }
 
