@@ -20,6 +20,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { handleMcpRequest } = require('./mcp-handler');
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.DEVICE_API_KEY || 'touch-demo-key-2026';
@@ -318,6 +319,27 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // === MCP 端点（Claude 自定义连接器）===
+  // POST /mcp — JSON-RPC 2.0 over HTTP
+  // GET  /mcp — 返回服务器信息（健康检查）
+  if (req.url === '/mcp' || req.url.startsWith('/mcp?')) {
+    if (req.method === 'POST') {
+      const mcpContext = { history, latestTouchSummary, touchState };
+      handleMcpRequest(req, res, mcpContext);
+      return;
+    }
+    if (req.method === 'GET') {
+      sendJSON(res, 200, {
+        server: 'touch-doll-mcp',
+        version: '1.0.0',
+        protocolVersion: '2025-06-18',
+        tools: ['get_recent_touches', 'get_last_touch'],
+        events: history.length,
+      });
+      return;
+    }
+  }
+
   // === 公开路由（不需要密钥）===
 
   // GET /viewer — 前端页面
@@ -432,11 +454,12 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('========================================');
-  console.log('  触摸玩偶 API 服务器 V2');
+  console.log('  触摸玩偶 API + MCP 服务器 V3');
   console.log('========================================');
   console.log(`监听端口: ${PORT}`);
   console.log(`API 密钥: ${API_KEY}`);
   console.log(`查看页面: http://<本机IP>:${PORT}/viewer`);
+  console.log(`MCP 端点: http://<本机IP>:${PORT}/mcp`);
   console.log(`历史记录: ${history.length} 条`);
   console.log('');
 });
