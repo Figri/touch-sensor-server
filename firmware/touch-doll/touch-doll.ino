@@ -38,10 +38,10 @@
 #define WIFI_TIMEOUT_MS  60000
 #define RECONNECT_MS     5000
 
-#define SEND_TOUCH_MS    500
+#define SEND_TOUCH_MS    800
 #define HEARTBEAT_MS     10000
-#define STATE_CHANGE_GUARD_MS 100
-#define HTTP_TIMEOUT_MS  3000
+#define STATE_CHANGE_GUARD_MS 80
+#define HTTP_TIMEOUT_MS  1500
 
 // 配置热点
 const char* AP_SSID = "TouchDoll-Setup";
@@ -119,11 +119,7 @@ int readAveraged(int pin) {
 
 // ============ 数据上报 ============
 void sendData(int s1, int s2, bool t1, bool t2) {
-  Serial.println("[HTTP] --- 开始发送 ---");
-  Serial.printf("[HTTP] URL: %s\n", cfg.serverUrl.c_str());
-  Serial.printf("[HTTP] Key: %s\n", cfg.apiKey.c_str());
-  Serial.printf("[HTTP] WiFi状态: %s\n", WiFi.status() == WL_CONNECTED ? "已连接" : "未连接");
-  Serial.printf("[HTTP] 本地IP: %s\n", WiFi.localIP().toString().c_str());
+  unsigned long t0 = millis();
 
   String body = "{\"deviceId\":\"" + cfg.deviceId + "\"";
   body += ",\"sensor1\":" + String(s1);
@@ -134,74 +130,50 @@ void sendData(int s1, int s2, bool t1, bool t2) {
 
   int code = -999;
 
-  // 根据协议选择 HTTP 或 HTTPS
   if (cfg.serverUrl.startsWith("https://")) {
-    // ===== HTTPS（需要 SSL，用于外网服务器）=====
-    Serial.println("[HTTP] 使用 HTTPS 模式");
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(HTTP_TIMEOUT_MS);
 
     HTTPClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setConnectTimeout(HTTP_TIMEOUT_MS);
 
     if (!http.begin(client, cfg.serverUrl)) {
-      Serial.println("[HTTP] 错误: begin 失败（URL格式可能有问题）");
+      Serial.println("[HTTP] begin 失败");
       return;
     }
 
     http.addHeader("Content-Type", "application/json");
     http.addHeader("x-device-key", cfg.apiKey);
-
-    Serial.printf("[HTTP] 发送数据: %s\n", body.c_str());
     code = http.POST(body);
-
-    if (code > 0) {
-      String response = http.getString();
-      Serial.printf("[HTTP] 成功! HTTP %d\n", code);
-      Serial.printf("[HTTP] 响应: %s\n", response.c_str());
-    } else {
-      Serial.printf("[HTTP] 失败! code=%d (%s)\n", code, http.errorToString(code).c_str());
-    }
     http.end();
 
   } else {
-    // ===== HTTP（明文，用于局域网本地服务器）=====
-    Serial.println("[HTTP] 使用 HTTP 模式（局域网）");
     WiFiClient client;
     client.setTimeout(HTTP_TIMEOUT_MS);
 
     HTTPClient http;
     http.setTimeout(HTTP_TIMEOUT_MS);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setConnectTimeout(HTTP_TIMEOUT_MS);
 
     if (!http.begin(client, cfg.serverUrl)) {
-      Serial.println("[HTTP] 错误: begin 失败（URL格式可能有问题）");
+      Serial.println("[HTTP] begin 失败");
       return;
     }
 
     http.addHeader("Content-Type", "application/json");
     http.addHeader("x-device-key", cfg.apiKey);
-
-    Serial.printf("[HTTP] 发送数据: %s\n", body.c_str());
     code = http.POST(body);
-
-    if (code > 0) {
-      String response = http.getString();
-      Serial.printf("[HTTP] 成功! HTTP %d\n", code);
-      Serial.printf("[HTTP] 响应: %s\n", response.c_str());
-    } else {
-      Serial.printf("[HTTP] 失败! code=%d (%s)\n", code, http.errorToString(code).c_str());
-      if (code == -1) Serial.println("[HTTP] 连接被拒绝——请确认电脑上 server.js 已启动，且 IP 地址正确");
-      else if (code == -2) Serial.println("[HTTP] 请求超时");
-      else if (code == -11) Serial.println("[HTTP] 读取超时");
-      else Serial.println("[HTTP] 未知错误");
-    }
     http.end();
   }
 
-  Serial.println("[HTTP] --- 发送结束 ---");
+  unsigned long elapsed = millis() - t0;
+  if (code > 0) {
+    Serial.printf("[HTTP] OK %d (%lums) s1=%d s2=%d t1=%d t2=%d\n", code, elapsed, s1, s2, t1, t2);
+  } else {
+    Serial.printf("[HTTP] FAIL code=%d (%lums) s1=%d s2=%d\n", code, elapsed, s1, s2);
+  }
 }
 
 // ============ 配置模式页面（原生 HTML 表单，不依赖 JavaScript）============
@@ -472,7 +444,8 @@ void loop() {
   unsigned long now = millis();
   bool shouldSend = false;
 
-  if (stateChanged && (now - lastSendTime >= STATE_CHANGE_GUARD_MS || lastSendTime == 0)) {
+  // 状态变化（按下或松手）立即发送，最高优先级，不等防抖
+  if (stateChanged) {
     shouldSend = true;
     Serial.println("[SEND] 触发：状态变化");
   } else if (touching && (now - lastSendTime >= SEND_TOUCH_MS || lastSendTime == 0)) {
@@ -480,7 +453,6 @@ void loop() {
   } else if (!touching && (now - lastHeartbeat >= HEARTBEAT_MS || lastHeartbeat == 0)) {
     shouldSend = true;
     lastHeartbeat = now;
-    Serial.println("[SEND] 触发：心跳");
   }
 
   if (shouldSend && wifiConnected) {
