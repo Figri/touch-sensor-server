@@ -20,14 +20,14 @@ const PROTOCOL_VERSION = '2025-06-18';
 const TOOLS = [
   {
     name: 'get_recent_touches',
-    description: '获取最近 N 分钟内的触摸记录。返回每次触摸的时间戳、传感器名称（脸/大大灵）、力度值、力度百分比、力度描述和持续时长。',
+    description: '获取最近 N 分钟内的触摸记录。返回每次触摸的时间、被触摸的部位（"脸"或"大大灵"）、力度值（0-4095）、力度百分比、力度描述（轻轻碰/摸摸/用力按/抱紧/狠狠抱紧）和持续时长（秒）。不传 minutes 时默认查最近 24 小时。',
     inputSchema: {
       type: 'object',
       properties: {
         minutes: {
           type: 'number',
-          description: '查询最近多少分钟内的记录，默认 5 分钟',
-          default: 5,
+          description: '查询最近多少分钟内的记录，默认 1440 分钟（24小时）',
+          default: 1440,
         },
       },
     },
@@ -48,36 +48,40 @@ function executeTool(toolName, args, context) {
 
   switch (toolName) {
     case 'get_recent_touches': {
-      const minutes = (args && typeof args.minutes === 'number') ? args.minutes : 5;
+      const minutes = (args && typeof args.minutes === 'number') ? args.minutes : 1440;
       const cutoff = Date.now() - minutes * 60 * 1000;
 
       const results = history.filter(e => {
         const t = new Date(e.time).getTime();
         return !isNaN(t) && t >= cutoff;
-      }).map(e => ({
-        time: e.time,
-        sensor: e.sensorLabel,
-        force: e.maxForce,
-        forcePercent: Math.round((e.maxForce / 4095) * 100),
-        description: e.description,
-        durationSeconds: e.duration,
-      }));
+      }).map(e => {
+        const d = new Date(e.time);
+        const pad = n => n < 10 ? '0' + n : '' + n;
+        const timeStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        return {
+          time: timeStr,
+          bodyPart: e.sensorLabel,
+          force: e.maxForce,
+          forcePercent: Math.round((e.maxForce / 4095) * 100),
+          description: e.description,
+          durationSeconds: e.duration,
+        };
+      });
 
       if (results.length === 0) {
         return {
           content: [{
             type: 'text',
-            text: `最近 ${minutes} 分钟内没有触摸记录。`,
+            text: `最近 ${minutes >= 60 ? Math.round(minutes/60) + ' 小时' : minutes + ' 分钟'}内没有触摸记录。`,
           }],
         };
       }
 
-      const summary = `最近 ${minutes} 分钟内共 ${results.length} 次触摸：\n` +
+      const timeLabel = minutes >= 1440 ? '24小时' : minutes >= 60 ? Math.round(minutes/60) + '小时' : minutes + '分钟';
+      const summary = `最近${timeLabel}内共 ${results.length} 次触摸：\n\n` +
         results.map((r, i) =>
-          `${i + 1}. [${r.sensor}] ${r.time}\n` +
-          `   力度: ${r.force}/4095 (${r.forcePercent}%) - ${r.description}\n` +
-          `   持续: ${r.durationSeconds}秒`
-        ).join('\n\n');
+          `${i + 1}. 时间: ${r.time} | 部位: ${r.bodyPart} | 力度: ${r.forcePercent}%(${r.description}) | 持续: ${r.durationSeconds}秒`
+        ).join('\n');
 
       return {
         content: [{
@@ -137,11 +141,15 @@ function executeTool(toolName, args, context) {
         };
       }
 
+      const d = new Date(data.lastTouch);
+      const pad = n => n < 10 ? '0' + n : '' + n;
+      const timeStr = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+
       const text = `最近一次触摸：\n` +
-        `  传感器: ${data.sensorLabel}\n` +
-        `  时间: ${data.lastTouch}\n` +
-        `  最大力度: ${data.maxForce}/4095 (${data.forcePercent}%)\n` +
-        `  力度描述: ${data.description}\n` +
+        `  时间: ${timeStr}\n` +
+        `  部位: ${data.sensorLabel}\n` +
+        `  力度: ${data.forcePercent}% (${data.description})\n` +
+        `  原始值: ${data.maxForce}/4095\n` +
         `  持续时长: ${data.duration}秒`;
 
       return {
