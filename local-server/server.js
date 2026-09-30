@@ -20,7 +20,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { handleMcpRequest } = require('./mcp-handler');
+const { handleMcpRequest, TOOLS } = require('./mcp-handler');
 const { handleOAuth } = require('./oauth-helper');
 
 const PORT = process.env.PORT || 3000;
@@ -332,7 +332,11 @@ const server = http.createServer((req, res) => {
   // GET  /mcp — 返回服务器信息（健康检查）
   if (req.url === '/mcp' || req.url.startsWith('/mcp?')) {
     if (req.method === 'POST') {
-      const mcpContext = { history, latestTouchSummary, touchState };
+      // ximi工具的访问密钥走连接器URL的?key=xxx（推荐做法，见mcp-handler.js
+      // 里checkXimiAccess的注释）；这里从请求URL上把它摘出来传进context，
+      // 触摸玩偶原有的history/latestTouchSummary/touchState这几个不受影响
+      const urlAccessKey = parsedUrl.searchParams.get('key') || null;
+      const mcpContext = { history, latestTouchSummary, touchState, urlAccessKey };
       handleMcpRequest(req, res, mcpContext);
       return;
     }
@@ -341,7 +345,7 @@ const server = http.createServer((req, res) => {
         server: 'touch-doll-mcp',
         version: '1.0.0',
         protocolVersion: '2025-06-18',
-        tools: ['get_recent_touches', 'get_last_touch'],
+        tools: TOOLS.map(t => t.name),
         events: history.length,
       });
       return;
