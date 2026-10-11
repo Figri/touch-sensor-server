@@ -110,6 +110,13 @@ function toDateKeyFromBjDate(bjDate) {
 function todayBjDateKey() {
   return toDateKeyFromBjDate(bjNow());
 }
+/** timestamptz(ISO字符串) 转成北京时间的 'HH:MM'，给文本列表展示用 */
+function formatBjHHMM(isoString) {
+  const bjDate = new Date(new Date(isoString).getTime() + BJ_OFFSET_MS);
+  const hh = String(bjDate.getUTCHours()).padStart(2, '0');
+  const mm = String(bjDate.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
 /** 北京时间某一天(date类型的'YYYY-MM-DD')对应的UTC时间范围[start,end)，查time_logs这类timestamptz字段用 */
 function bjDateKeyToUtcRange(dateKey) {
   const [y, m, d] = dateKey.split('-').map(Number);
@@ -229,7 +236,24 @@ async function ximiGetLogsForDate(dateKey, { onlyIncompleteTodos }) {
     }));
   if (onlyIncompleteTodos) todos = todos.filter((t) => !t.done);
 
-  const text = `${dateKey} 的时间日志共 ${logs.length} 条，事项${onlyIncompleteTodos ? '（未完成）' : ''}共 ${todos.length} 条。`;
+  // text 不能只给个数——之前只写"共X条"，结果调用方的模型只看 content 不去解析
+  // structuredContent，导致西米问"今天干了啥"只能得到一个数字、看不到明细。
+  // 这里把每条日志/事项的人类可读信息直接摆进 text，不管调用方读不读
+  // structuredContent 都能拿到完整信息。
+  const logLines = logs.map((l) => {
+    const cat = l.category || '未分类';
+    const desc = l.description ? `：${l.description}` : '';
+    const tags = l.tags.length > 0 ? ` [${l.tags.join('/')}]` : '';
+    return `- ${formatBjHHMM(l.start_time)}-${formatBjHHMM(l.end_time)} ${cat}${desc}${tags}`;
+  });
+  const todoLines = todos.map((t) => {
+    const cat = t.category ? `[${t.category}] ` : '';
+    const mark = t.done ? '✓' : '○';
+    return `- ${mark} ${cat}${t.content}${t.important ? '（重要）' : ''}`;
+  });
+  const text =
+    `${dateKey} 的时间日志共 ${logs.length} 条${logs.length > 0 ? '：\n' + logLines.join('\n') : '。'}\n` +
+    `事项${onlyIncompleteTodos ? '（未完成）' : ''}共 ${todos.length} 条${todos.length > 0 ? '：\n' + todoLines.join('\n') : '。'}`;
   return {
     content: [{ type: 'text', text }],
     structuredContent: { date: dateKey, time_logs: logs, todo_items: todos },
