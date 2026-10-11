@@ -14,6 +14,16 @@
  * 协议版本：2025-06-18（兼容 Claude 自定义连接器）
  */
 
+// @supabase/supabase-js 内部无条件会建一个 RealtimeClient（即使我们的 6 个
+// ximi 工具完全不用 realtime 订阅），它要求全局有 WebSocket——Node 22+ 自带，
+// 低于 22 没有，createClient() 直接同步抛"Node.js detected but native
+// WebSocket not found"，把整个进程在 require 阶段就炸了。阿里云那台服务器
+// 装的是 Node 20（deploy.sh 自己写死装的 20.x），不是我们能随便动的，所以在
+// 这里垫一个 ws 包的 polyfill，不改服务器 Node 版本、不改 realtime-js 本身。
+if (typeof global.WebSocket === 'undefined') {
+  global.WebSocket = require('ws');
+}
+
 const { createClient } = require('@supabase/supabase-js');
 
 // 支持的协议版本
