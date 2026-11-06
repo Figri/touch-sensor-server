@@ -10,6 +10,7 @@
  *   - get_recent_touches: 获取最近N分钟的触摸记录（触摸玩偶，原有功能）
  *   - get_last_touch:    获取最近一次触摸详情（触摸玩偶，原有功能）
  *   - ximi_*:            读写西米时间日志/事项待办（新增，见下方"ximi工具"分区）
+ *   - ximi_get_sleep / ximi_get_health_day: 读三星手表的健康数据（Supabase health_records，经只读函数）
  *
  * 协议版本：2025-06-18（兼容 Claude 自定义连接器）
  */
@@ -25,6 +26,21 @@ if (typeof global.WebSocket === 'undefined') {
 }
 
 const { createClient } = require('@supabase/supabase-js');
+
+// 本目录下的 .env（不进仓库，.gitignore 里有）：KEY=VALUE 一行一个，已经在环境里的不覆盖。
+// 新加的 XIMI_HEALTH_READ_KEY 放这里就行，不用改 pm2 的启动参数。
+(function loadLocalEnv() {
+  try {
+    const text = require('fs').readFileSync(require('path').join(__dirname, '.env'), 'utf8');
+    for (const line of text.split(/\r?\n/)) {
+      const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+      if (!m || process.env[m[1]] !== undefined) continue;
+      process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    }
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') console.error('[mcp] 读 .env 失败:', e.message);
+  }
+})();
 
 // 支持的协议版本
 const PROTOCOL_VERSION = '2025-06-18';
@@ -85,9 +101,14 @@ function noDb() {
 
 function dbError(e) {
   console.error('[ximi mcp] 数据库操作失败:', e);
+  const msg = e && e.message ? e.message : String(e);
+  // 免费版 Supabase 一周没动静会自动暂停，暂停时这里拿到的就是 fetch failed
+  const hint = /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN/i.test(msg)
+    ? '（连不上 Supabase：多半是项目被自动暂停了，去 supabase.com 打开 ximi 项目点 Restore；也可能是服务器网络抽风，过几分钟再试）'
+    : '';
   return {
     isError: true,
-    content: [{ type: 'text', text: '数据库操作失败: ' + (e && e.message ? e.message : String(e)) }],
+    content: [{ type: 'text', text: '数据库操作失败: ' + msg + hint }],
   };
 }
 
@@ -477,6 +498,156 @@ async function ximiCompleteTodo(args) {
   };
 }
 
+// ============ ximi 健康数据（三星手表 → Health Connect → HC Webhook → Supabase health_records）============
+// 表开了 RLS，anon key 直接读不到；走两个只读函数 health_sleep / health_day，要带读密钥
+// XIMI_HEALTH_READ_KEY（数据库里只存它的哈希）。「一天」按北京时间，睡眠算在醒来那天。
+const XIMI_HEALTH_READ_KEY = process.env.XIMI_HEALTH_READ_KEY;
+
+function noHealthKey() {
+  return {
+    isError: true,
+    content: [{ type: 'text', text: '服务器还没配读健康数据的密钥（local-server/.env 里的 XIMI_HEALTH_READ_KEY），联系西米配一下。' }],
+  };
+}
+
+function healthError(e) {
+  const msg = e && e.message ? e.message : String(e);
+  if (/bad secret/i.test(msg)) {
+    return { isError: true, content: [{ type: 'text', text: '读健康数据的密钥不对（local-server/.env 里的 XIMI_HEALTH_READ_KEY），对一下。' }] };
+  }
+  return dbError(e);
+}
+
+/** 分钟 → '7小时50分' / '50分' */
+function fmtMinutes(min) {
+  const m = Math.max(0, Math.round(Number(min) || 0));
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  if (!h) return `${r}分`;
+  return r ? `${h}小时${r}分` : `${h}小时`;
+}
+
+/** 'YYYY-MM-DD' → 'M/D' */
+function mdOf(dateKey) {
+  const [, m, d] = String(dateKey).split('-').map(Number);
+  return `${m}/${d}`;
+}
+
+function addDaysKey(dateKey, n) {
+  const d = parseDateKeyToCalendarDate(dateKey);
+  d.setUTCDate(d.getUTCDate() + n);
+  return toDateKeyFromBjDate(d);
+}
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** 一段睡眠 → '23:50 入睡 → 07:40 醒，在床 7小时50分，睡着 7小时40分（深睡 1小时10分 · 浅睡 5小时40分 · REM 50分 · 清醒 10分）' */
+function fmtSleep(s) {
+  const v = s.value || {};
+  const parts = [];
+  if (v.has_stages) {
+    parts.push(`深睡 ${fmtMinutes(v.deep_minutes)}`, `浅睡 ${fmtMinutes(v.light_minutes)}`, `REM ${fmtMinutes(v.rem_minutes)}`);
+    if (v.awake_minutes) parts.push(`清醒 ${fmtMinutes(v.awake_minutes)}`);
+    if (v.unspecified_minutes) parts.push(`没分阶段 ${fmtMinutes(v.unspecified_minutes)}`);
+  }
+  return `${formatBjHHMM(s.start)} 入睡 → ${formatBjHHMM(s.end)} 醒，在床 ${fmtMinutes(v.total_minutes)}，睡着 ${fmtMinutes(v.asleep_minutes)}` +
+    (parts.length ? `（${parts.join(' · ')}）` : '（没有分阶段数据）');
+}
+
+function sleepTotals(list) {
+  const t = { total_minutes: 0, asleep_minutes: 0, deep_minutes: 0, light_minutes: 0, rem_minutes: 0, awake_minutes: 0 };
+  for (const s of list) for (const k of Object.keys(t)) t[k] += Number((s.value || {})[k]) || 0;
+  return t;
+}
+
+async function ximiGetSleep(args) {
+  if (!ximiSupabase) return noDb();
+  if (!XIMI_HEALTH_READ_KEY) return noHealthKey();
+  const today = todayBjDateKey();
+  let from;
+  let to;
+  if (args && args.date != null && args.date !== '') {
+    if (!DATE_RE.test(args.date)) return { isError: true, content: [{ type: 'text', text: 'date 参数格式不对，要 YYYY-MM-DD（醒来那天，北京时间）' }] };
+    from = to = args.date;
+  } else {
+    const days = Math.min(31, Math.max(1, Math.floor(Number(args && args.days) || 1)));
+    to = today;
+    from = addDaysKey(today, -(days - 1));
+  }
+  const { data, error } = await ximiSupabase.rpc('health_sleep', { p_secret: XIMI_HEALTH_READ_KEY, p_from: from, p_to: to });
+  if (error) throw error;
+  const sessions = Array.isArray(data) ? data : [];
+
+  const byDay = {};
+  for (const s of sessions) (byDay[s.wake_date] = byDay[s.wake_date] || []).push(s);
+  const lines = [];
+  const days = [];
+  for (let d = from; d <= to; d = addDaysKey(d, 1)) {
+    const list = byDay[d] || [];
+    days.push({ date: d, sessions: list, totals: sleepTotals(list) });
+    if (!list.length) {
+      lines.push(`${mdOf(d)}：没有睡眠数据`);
+    } else if (list.length === 1) {
+      lines.push(`${mdOf(d)}：${fmtSleep(list[0])}`);
+    } else {
+      const t = sleepTotals(list);
+      lines.push(`${mdOf(d)}：${list.length} 段，一共睡着 ${fmtMinutes(t.asleep_minutes)}`);
+      for (const s of list) lines.push(`  · ${fmtSleep(s)}`);
+    }
+  }
+  const head = from === to ? `睡眠（${mdOf(from)} 醒来那次，北京时间）` : `睡眠（${mdOf(from)}–${mdOf(to)}，按醒来那天算，北京时间）`;
+  return {
+    content: [{ type: 'text', text: `${head}\n${lines.join('\n')}` }],
+    structuredContent: { from, to, days },
+  };
+}
+
+async function ximiGetHealthDay(args) {
+  if (!ximiSupabase) return noDb();
+  if (!XIMI_HEALTH_READ_KEY) return noHealthKey();
+  const date = args && args.date ? args.date : todayBjDateKey();
+  if (!DATE_RE.test(date)) return { isError: true, content: [{ type: 'text', text: 'date 参数格式不对，要 YYYY-MM-DD，北京时间' }] };
+  const { data, error } = await ximiSupabase.rpc('health_day', { p_secret: XIMI_HEALTH_READ_KEY, p_date: date });
+  if (error) throw error;
+  const day = data || {};
+
+  const lines = [`${mdOf(date)} 的健康数据（北京时间）`];
+  const sleep = Array.isArray(day.sleep) ? day.sleep : [];
+  if (!sleep.length) lines.push('睡眠：没有数据（睡眠算在醒来那天）');
+  else if (sleep.length === 1) lines.push(`睡眠：${fmtSleep(sleep[0])}`);
+  else {
+    lines.push(`睡眠：${sleep.length} 段，一共睡着 ${fmtMinutes(sleepTotals(sleep).asleep_minutes)}`);
+    for (const s of sleep) lines.push(`  · ${fmtSleep(s)}`);
+  }
+
+  const steps = day.steps || {};
+  lines.push(Number(steps.records) ? `步数：${Math.round(Number(steps.total)).toLocaleString('en-US')} 步` : '步数：没有数据');
+
+  const ex = Array.isArray(day.exercise) ? day.exercise : [];
+  if (!ex.length) lines.push('运动：没有记录');
+  else {
+    lines.push(`运动：${ex.length} 次`);
+    for (const e of ex) {
+      const v = e.value || {};
+      const extra = [];
+      if (v.distance_meters) extra.push(`${(Number(v.distance_meters) / 1000).toFixed(2)} 公里`);
+      if (v.steps) extra.push(`${v.steps} 步`);
+      lines.push(`  · ${formatBjHHMM(e.start)}–${formatBjHHMM(e.end)} ${v.type_name || '运动'} ${fmtMinutes(v.duration_minutes)}${extra.length ? '，' + extra.join('，') : ''}`);
+    }
+  }
+
+  const hr = day.heart_rate || {};
+  if (Number(hr.samples)) {
+    lines.push(`心率：平均 ${Math.round(Number(hr.avg))}（最低 ${Math.round(Number(hr.min))}，最高 ${Math.round(Number(hr.max))}）` +
+      (day.resting_heart_rate != null ? `，静息 ${Math.round(Number(day.resting_heart_rate))}` : ''));
+  } else {
+    lines.push('心率：没有数据' + (day.resting_heart_rate != null ? `（静息 ${Math.round(Number(day.resting_heart_rate))}）` : ''));
+  }
+  lines.push(day.last_sync ? `（手机最后一次推送：${mdOf(toDateKeyFromBjDate(new Date(new Date(day.last_sync).getTime() + BJ_OFFSET_MS)))} ${formatBjHHMM(day.last_sync)}）` : '（手机那边还没推送过数据）');
+
+  return { content: [{ type: 'text', text: lines.join('\n') }], structuredContent: day };
+}
+
 // ============ 工具定义 ============
 const TOOLS = [
   {
@@ -589,6 +760,29 @@ const TOOLS = [
         access_key: { type: 'string', description: '访问密钥。连接器URL本身已经带了密钥的话可以不传。' },
       },
       required: ['content_match'],
+    },
+  },
+  {
+    name: 'ximi_get_sleep',
+    description: '西米的睡眠（三星手表 → Health Connect 同步来的）：入睡时间、醒来时间、在床/睡着时长、深睡/浅睡/REM/清醒。按北京时间，跨午夜的睡眠算在醒来那天。传 date 查某一天醒来那次；传 days 查最近 N 天（含今天）；都不传就是今天早上醒来那次。需要密钥。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: '醒来那天，格式 YYYY-MM-DD，北京时间。和 days 二选一' },
+        days: { type: 'integer', description: '最近几天（含今天），1–31。和 date 二选一' },
+        access_key: { type: 'string', description: '访问密钥。连接器URL本身已经带了密钥的话可以不传。' },
+      },
+    },
+  },
+  {
+    name: 'ximi_get_health_day',
+    description: '西米某一天的健康数据（三星手表 → Health Connect 同步来的）：睡眠（算在醒来那天）、步数、运动（类型、时长、距离）、平均/最低/最高心率、静息心率，以及手机最后一次推送的时间。按北京时间算一天，不传 date 默认今天。需要密钥。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: '日期，格式 YYYY-MM-DD，北京时间，不传默认今天' },
+        access_key: { type: 'string', description: '访问密钥。连接器URL本身已经带了密钥的话可以不传。' },
+      },
     },
   },
 ];
@@ -763,6 +957,24 @@ async function executeTool(toolName, args, context) {
         return await ximiCompleteTodo(args);
       } catch (e) {
         return dbError(e);
+      }
+    }
+
+    case 'ximi_get_sleep': {
+      if (!checkXimiAccess(args, context)) return accessDenied();
+      try {
+        return await ximiGetSleep(args);
+      } catch (e) {
+        return healthError(e);
+      }
+    }
+
+    case 'ximi_get_health_day': {
+      if (!checkXimiAccess(args, context)) return accessDenied();
+      try {
+        return await ximiGetHealthDay(args);
+      } catch (e) {
+        return healthError(e);
       }
     }
 
